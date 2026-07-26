@@ -119,6 +119,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateMenu(msg)
 		case vistaEstado:
 			return m.updateEstado(msg)
+		case vistaLogs:
+			return m.updateLogs(msg)
 		}
 
 	case estadoActualizadoMsg:
@@ -155,6 +157,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logsLineas = msg.lineas
 			m.logsError = ""
 		}
+		return m, nil
 
 	case tickLogsMsg:
 		// Solo seguimos refrescando si el usuario sigue en la pantalla de logs.
@@ -162,9 +165,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tea.Batch(leerLogsCmd(), tickLogsCmd())
-
-		return m, nil
-
 	}
 
 	return m, nil
