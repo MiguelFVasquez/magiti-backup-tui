@@ -1,7 +1,11 @@
 // Package tui para el manejo de la interfaz
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 var (
 	estiloTituloASCII = lipgloss.NewStyle().
@@ -15,6 +19,11 @@ var (
 				Bold(true).
 				Padding(0, 1).
 				MarginBottom(1)
+
+	estiloTitulo = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#7DA6C9")).
+			MarginBottom(1)
 
 	estiloSeleccionado = lipgloss.NewStyle().
 				Background(lipgloss.Color("#3A3A5A")).
@@ -45,6 +54,23 @@ var (
 	estiloError = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FF5F5F"))
 )
+
+var (
+	estiloLogInfo  = lipgloss.NewStyle().Foreground(lipgloss.Color("#C4C4C4"))
+	estiloLogWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD866"))
+	estiloLogError = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5F5F"))
+)
+
+func estiloLineaLog(linea string) string {
+	switch {
+	case strings.Contains(linea, "[ERROR]"):
+		return estiloLogError.Render(linea)
+	case strings.Contains(linea, "[WARN]"):
+		return estiloLogWarn.Render(linea)
+	default:
+		return estiloLogInfo.Render(linea)
+	}
+}
 
 const tituloASCII = `
  __  __    _    ____ ___ _____ ___

@@ -1,3 +1,4 @@
+// Package daemon para el servicio
 package daemon
 
 import (

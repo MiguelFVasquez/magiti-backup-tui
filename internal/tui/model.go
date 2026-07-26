@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/MiguelFVasquez/magiti-backup-tui/internal/config"
 	"github.com/MiguelFVasquez/magiti-backup-tui/internal/daemon"
 )
 
@@ -14,6 +15,7 @@ type vista int
 const (
 	vistaMenu vista = iota
 	vistaEstado
+	vistaLogs
 )
 
 var opcionesMenu = []string{
@@ -32,6 +34,10 @@ type model struct {
 	cargando       bool
 	ancho          int
 	alto           int
+
+	// Estado de la pantalla de logs
+	logsLineas []string
+	logsError  string
 }
 
 func NuevoModelo() model {
@@ -53,6 +59,38 @@ type (
 		err     error
 	}
 )
+
+type logsCargadosMsg struct {
+	lineas []string
+	err    error
+}
+
+type tickLogsMsg struct{}
+
+const (
+	maxLineasLog          = 30
+	intervaloRefrescoLogs = 3 * time.Second
+)
+
+func leerLogsCmd() tea.Cmd {
+	return func() tea.Msg {
+		ruta, err := config.RutaLogDaemon()
+		if err != nil {
+			return logsCargadosMsg{err: err}
+		}
+		lineas, err := daemon.LeerUltimasLineas(ruta, maxLineasLog)
+		if err != nil {
+			return logsCargadosMsg{err: err}
+		}
+		return logsCargadosMsg{lineas: lineas}
+	}
+}
+
+func tickLogsCmd() tea.Cmd {
+	return tea.Tick(intervaloRefrescoLogs, func(t time.Time) tea.Msg {
+		return tickLogsMsg{}
+	})
+}
 
 func consultarEstadoCmd() tea.Cmd {
 	return func() tea.Msg {
@@ -110,6 +148,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.alto = msg.Height
 		return m, nil
 
+	case logsCargadosMsg:
+		if msg.err != nil {
+			m.logsError = msg.err.Error()
+		} else {
+			m.logsLineas = msg.lineas
+			m.logsError = ""
+		}
+
+	case tickLogsMsg:
+		// Solo seguimos refrescando si el usuario sigue en la pantalla de logs.
+		if m.vista != vistaLogs {
+			return m, nil
+		}
+		return m, tea.Batch(leerLogsCmd(), tickLogsCmd())
+
+		return m, nil
+
 	}
 
 	return m, nil
@@ -133,6 +188,9 @@ func (m model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.vista = vistaEstado
 			m.cargando = true
 			return m, consultarEstadoCmd()
+		case 1:
+			m.vista = vistaLogs
+			return m, tea.Batch(leerLogsCmd(), tickLogsCmd())
 		default:
 			// Las demás pantallas se implementan en los siguientes pasos.
 		}
@@ -162,6 +220,17 @@ func (m model) updateEstado(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q":
+		m.vista = vistaMenu
+		return m, nil
+	}
+	return m, nil
+}
+
 // esperarYLimpiarMsg limpia el mensaje de acción tras unos segundos, para
 // que no quede pegado indefinidamente en pantalla.
 type limpiarMensajeMsg struct{}
@@ -178,6 +247,8 @@ func (m model) View() string {
 	switch m.vista {
 	case vistaEstado:
 		return m.viewEstado()
+	case vistaLogs:
+		return m.viewLogs()
 	default:
 		return m.viewMenu()
 	}
@@ -231,5 +302,26 @@ func (m model) viewEstado() string {
 	}
 
 	s += estiloAyuda.Render("i iniciar · d detener · r reiniciar · esc volver al menú")
+	return s
+}
+
+func (m model) viewLogs() string {
+	s := estiloTitulo.Render("Logs del Daemon") + "\n\n"
+
+	if m.logsError != "" {
+		s += estiloError.Render("Error al leer el log: "+m.logsError) + "\n"
+		s += estiloAyuda.Render("\nesc volver al menú")
+		return s
+	}
+
+	if len(m.logsLineas) == 0 {
+		s += "Sin registros aún.\n"
+	} else {
+		for _, linea := range m.logsLineas {
+			s += estiloLineaLog(linea) + "\n"
+		}
+	}
+
+	s += estiloAyuda.Render("\nActualizando cada 3s · esc volver al menú")
 	return s
 }
