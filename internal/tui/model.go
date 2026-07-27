@@ -16,6 +16,7 @@ const (
 	vistaMenu vista = iota
 	vistaEstado
 	vistaLogs
+	vistaHistorial
 )
 
 var opcionesMenu = []string{
@@ -38,6 +39,11 @@ type model struct {
 	// Estado de la pantalla de logs
 	logsLineas []string
 	logsError  string
+
+	// Estado de la pantalla de historial
+	historialCommits  []daemon.CommitInfo
+	historialError    string
+	historialCargando bool
 }
 
 func NuevoModelo() model {
@@ -67,10 +73,17 @@ type logsCargadosMsg struct {
 
 type tickLogsMsg struct{}
 
+type historialCargadoMsg struct {
+	commits []daemon.CommitInfo
+	err     error
+}
+
 const (
 	maxLineasLog          = 30
 	intervaloRefrescoLogs = 3 * time.Second
 )
+
+const maxCommitsHistorial = 15
 
 func leerLogsCmd() tea.Cmd {
 	return func() tea.Msg {
@@ -90,6 +103,20 @@ func tickLogsCmd() tea.Cmd {
 	return tea.Tick(intervaloRefrescoLogs, func(t time.Time) tea.Msg {
 		return tickLogsMsg{}
 	})
+}
+
+func leerHistorialCmd() tea.Cmd {
+	return func() tea.Msg {
+		repoDir, err := config.RepoDirDaemon()
+		if err != nil {
+			return historialCargadoMsg{err: err}
+		}
+		commits, err := daemon.LeerHistorial(repoDir, maxCommitsHistorial)
+		if err != nil {
+			return historialCargadoMsg{err: err}
+		}
+		return historialCargadoMsg{commits: commits}
+	}
 }
 
 func consultarEstadoCmd() tea.Cmd {
@@ -121,6 +148,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEstado(msg)
 		case vistaLogs:
 			return m.updateLogs(msg)
+		case vistaHistorial:
+			return m.updateHistorial(msg)
 		}
 
 	case estadoActualizadoMsg:
@@ -165,6 +194,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tea.Batch(leerLogsCmd(), tickLogsCmd())
+
+	case historialCargadoMsg:
+		m.historialCargando = false
+		if msg.err != nil {
+			m.historialError = msg.err.Error()
+		} else {
+			m.historialCommits = msg.commits
+			m.historialError = ""
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -191,6 +230,10 @@ func (m model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 1:
 			m.vista = vistaLogs
 			return m, tea.Batch(leerLogsCmd(), tickLogsCmd())
+		case 2:
+			m.vista = vistaHistorial
+			m.historialCargando = true
+			return m, leerHistorialCmd()
 		default:
 			// Las demás pantallas se implementan en los siguientes pasos.
 		}
@@ -231,6 +274,20 @@ func (m model) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) updateHistorial(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q":
+		m.vista = vistaMenu
+		return m, nil
+	case "r":
+		m.historialCargando = true
+		return m, leerHistorialCmd()
+	}
+	return m, nil
+}
+
 // esperarYLimpiarMsg limpia el mensaje de acción tras unos segundos, para
 // que no quede pegado indefinidamente en pantalla.
 type limpiarMensajeMsg struct{}
@@ -249,6 +306,8 @@ func (m model) View() string {
 		return m.viewEstado()
 	case vistaLogs:
 		return m.viewLogs()
+	case vistaHistorial:
+		return m.viewHistorial()
 	default:
 		return m.viewMenu()
 	}
@@ -323,5 +382,32 @@ func (m model) viewLogs() string {
 	}
 
 	s += estiloAyuda.Render("\nActualizando cada 3s · esc volver al menú")
+	return s
+}
+
+func (m model) viewHistorial() string {
+	s := estiloTitulo.Render("Historial de Respaldos") + "\n\n"
+
+	if m.historialCargando {
+		s += "Cargando historial...\n"
+		return s
+	}
+
+	if m.historialError != "" {
+		s += estiloError.Render("Error al leer el historial: "+m.historialError) + "\n"
+		s += estiloAyuda.Render("\nesc volver al menú")
+		return s
+	}
+
+	if len(m.historialCommits) == 0 {
+		s += "Aún no hay respaldos registrados.\n"
+	} else {
+		for _, c := range m.historialCommits {
+			linea := estiloFechaCommit.Render(c.Fecha) + "  " + estiloMensajeCommit.Render(c.Mensaje)
+			s += linea + "\n"
+		}
+	}
+
+	s += estiloAyuda.Render("\nr refrescar · esc volver al menú")
 	return s
 }

@@ -50,3 +50,11 @@ func RutaLogDaemon() (string, error) {
 	}
 	return filepath.Join(cfg.RepoDir, "scripts", "backup-daemon.log"), nil
 }
+
+func RepoDirDaemon() (string, error) {
+	cfg, err := LeerConfigDaemon()
+	if err != nil {
+		return "", err
+	}
+	return cfg.RepoDir, nil
+}

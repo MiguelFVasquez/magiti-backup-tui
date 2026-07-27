@@ -61,6 +61,11 @@ var (
 	estiloLogError = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5F5F"))
 )
 
+var (
+	estiloFechaCommit   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7DA6C9"))
+	estiloMensajeCommit = lipgloss.NewStyle().Foreground(lipgloss.Color("#E0E0E0"))
+)
+
 func estiloLineaLog(linea string) string {
 	switch {
 	case strings.Contains(linea, "[ERROR]"):
