@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -10,13 +14,23 @@ import (
 	"github.com/MiguelFVasquez/magiti-backup-tui/internal/daemon"
 )
 
-type vista int
+type (
+	vista        int
+	modoCarpetas int
+)
 
 const (
 	vistaMenu vista = iota
 	vistaEstado
 	vistaLogs
 	vistaHistorial
+	vistaCarpetas
+)
+
+const (
+	modoListaCarpetas modoCarpetas = iota
+	modoAgregarCarpeta
+	modoConfirmarEliminar
 )
 
 var opcionesMenu = []string{
@@ -44,11 +58,27 @@ type model struct {
 	historialCommits  []daemon.CommitInfo
 	historialError    string
 	historialCargando bool
+
+	// Estado de la pantalla de carpetas
+	carpetasModo      modoCarpetas
+	carpetas          map[string]string
+	carpetasOrden     []string // para tener un orden estable al listar
+	cursorCarpetas    int
+	inputCarpeta      textinput.Model
+	carpetasError     string
+	carpetasMensaje   string
+	carpetaAConfirmar string
 }
 
 func NuevoModelo() model {
+	ti := textinput.New()
+	ti.Placeholder = "nombre-de-la-carpeta"
+	ti.CharLimit = 50
+	ti.Width = 30
+
 	return model{
-		vista: vistaMenu,
+		vista:        vistaMenu,
+		inputCarpeta: ti,
 	}
 }
 
@@ -78,6 +108,16 @@ type historialCargadoMsg struct {
 	err     error
 }
 
+type carpetasCargadasMsg struct {
+	carpetas map[string]string
+	err      error
+}
+
+type carpetaAccionCompletadaMsg struct {
+	mensaje string
+	err     error
+}
+
 const (
 	maxLineasLog          = 30
 	intervaloRefrescoLogs = 3 * time.Second
@@ -85,6 +125,7 @@ const (
 
 const maxCommitsHistorial = 15
 
+// Mensajes para la view de logs
 func leerLogsCmd() tea.Cmd {
 	return func() tea.Msg {
 		ruta, err := config.RutaLogDaemon()
@@ -119,6 +160,7 @@ func leerHistorialCmd() tea.Cmd {
 	}
 }
 
+// Mensajes para la view de estado del servicio
 func consultarEstadoCmd() tea.Cmd {
 	return func() tea.Msg {
 		return estadoActualizadoMsg(daemon.ConsultarEstado())
@@ -132,6 +174,41 @@ func ejecutarAccionCmd(accion func() error, nombreAccion string) tea.Cmd {
 			return accionCompletadaMsg{err: err}
 		}
 		return accionCompletadaMsg{mensaje: nombreAccion + " ejecutado correctamente."}
+	}
+}
+
+// Mensajes para la view de configuración de la gestión de carpetas
+func leerCarpetasCmd() tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := config.LeerConfigDaemon()
+		if err != nil {
+			return carpetasCargadasMsg{err: err}
+		}
+		return carpetasCargadasMsg{carpetas: cfg.Carpetas}
+	}
+}
+
+func agregarCarpetaCmd(nombre string) tea.Cmd {
+	return func() tea.Msg {
+		if err := config.AgregarCarpeta(nombre); err != nil {
+			return carpetaAccionCompletadaMsg{err: err}
+		}
+		if err := daemon.Reiniciar(); err != nil {
+			return carpetaAccionCompletadaMsg{err: fmt.Errorf("carpeta agregada, pero falló el reinicio del servicio: %w", err)}
+		}
+		return carpetaAccionCompletadaMsg{mensaje: "Carpeta '" + nombre + "' agregada y servicio reiniciado."}
+	}
+}
+
+func eliminarCarpetaCmd(nombre string) tea.Cmd {
+	return func() tea.Msg {
+		if err := config.EliminarCarpeta(nombre); err != nil {
+			return carpetaAccionCompletadaMsg{err: err}
+		}
+		if err := daemon.Reiniciar(); err != nil {
+			return carpetaAccionCompletadaMsg{err: fmt.Errorf("carpeta eliminada, pero falló el reinicio del servicio: %w", err)}
+		}
+		return carpetaAccionCompletadaMsg{mensaje: "Carpeta '" + nombre + "' eliminada y servicio reiniciado."}
 	}
 }
 
@@ -150,6 +227,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateLogs(msg)
 		case vistaHistorial:
 			return m.updateHistorial(msg)
+		case vistaCarpetas:
+			return m.updateCarpetas(msg)
 		}
 
 	case estadoActualizadoMsg:
@@ -204,6 +283,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historialError = ""
 		}
 		return m, nil
+
+	case carpetasCargadasMsg:
+		if msg.err != nil {
+			m.carpetasError = msg.err.Error()
+		} else {
+			m.carpetas = msg.carpetas
+			m.carpetasOrden = ordenarClaves(msg.carpetas)
+			m.carpetasError = ""
+			if m.cursorCarpetas >= len(m.carpetasOrden) {
+				m.cursorCarpetas = 0
+			}
+		}
+		return m, nil
+
+	case carpetaAccionCompletadaMsg:
+		m.carpetasModo = modoListaCarpetas
+		if msg.err != nil {
+			m.carpetasError = msg.err.Error()
+			m.carpetasMensaje = ""
+		} else {
+			m.carpetasMensaje = msg.mensaje
+			m.carpetasError = ""
+		}
+		return m, leerCarpetasCmd()
+
 	}
 
 	return m, nil
@@ -234,6 +338,10 @@ func (m model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.vista = vistaHistorial
 			m.historialCargando = true
 			return m, leerHistorialCmd()
+		case 3:
+			m.vista = vistaCarpetas
+			m.carpetasModo = modoListaCarpetas
+			return m, leerCarpetasCmd()
 		default:
 			// Las demás pantallas se implementan en los siguientes pasos.
 		}
@@ -298,6 +406,97 @@ func esperarYLimpiarMsg() tea.Cmd {
 	})
 }
 
+// ----------update de carpetas ------------------
+func (m model) updateCarpetas(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.carpetasModo {
+
+	case modoListaCarpetas:
+		return m.updateCarpetasLista(msg)
+
+	case modoAgregarCarpeta:
+		return m.updateCarpetasAgregar(msg)
+
+	case modoConfirmarEliminar:
+		return m.updateCarpetasConfirmar(msg)
+	}
+	return m, nil
+}
+
+func (m model) updateCarpetasLista(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q":
+		m.vista = vistaMenu
+		m.carpetasMensaje = ""
+		m.carpetasError = ""
+		return m, nil
+	case "up", "k":
+		if m.cursorCarpetas > 0 {
+			m.cursorCarpetas--
+		}
+	case "down", "j":
+		if m.cursorCarpetas < len(m.carpetasOrden)-1 {
+			m.cursorCarpetas++
+		}
+	case "a":
+		m.carpetasModo = modoAgregarCarpeta
+		m.inputCarpeta.SetValue("")
+		m.inputCarpeta.Focus()
+		m.carpetasError = ""
+		m.carpetasMensaje = ""
+		return m, textinput.Blink
+	case "d":
+		if len(m.carpetasOrden) == 0 {
+			return m, nil
+		}
+		m.carpetaAConfirmar = m.carpetasOrden[m.cursorCarpetas]
+		m.carpetasModo = modoConfirmarEliminar
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) updateCarpetasAgregar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.carpetasModo = modoListaCarpetas
+		m.inputCarpeta.Blur()
+		return m, nil
+	case "enter":
+		nombre := strings.TrimSpace(m.inputCarpeta.Value())
+		if nombre == "" {
+			m.carpetasError = "El nombre de la carpeta no puede estar vacío."
+			return m, nil
+		}
+		m.inputCarpeta.Blur()
+		m.carpetasModo = modoListaCarpetas
+		return m, agregarCarpetaCmd(nombre)
+	}
+
+	var cmd tea.Cmd
+	m.inputCarpeta, cmd = m.inputCarpeta.Update(msg)
+	return m, cmd
+}
+
+func (m model) updateCarpetasConfirmar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "y", "s":
+		nombre := m.carpetaAConfirmar
+		m.carpetasModo = modoListaCarpetas
+		return m, eliminarCarpetaCmd(nombre)
+	case "n", "esc":
+		m.carpetasModo = modoListaCarpetas
+		m.carpetaAConfirmar = ""
+		return m, nil
+	}
+	return m, nil
+}
+
 // ---------- View ----------
 
 func (m model) View() string {
@@ -308,11 +507,14 @@ func (m model) View() string {
 		return m.viewLogs()
 	case vistaHistorial:
 		return m.viewHistorial()
+	case vistaCarpetas:
+		return m.viewCarpetas()
 	default:
 		return m.viewMenu()
 	}
 }
 
+// -------------View  del menu----------------------
 func (m model) viewMenu() string {
 	contenido := estiloTituloASCII.Render(tituloASCII) + "\n"
 	contenido += estiloEtiquetaMenu.Render("MENÚ PRINCIPAL") + "\n\n"
@@ -339,6 +541,7 @@ func (m model) viewMenu() string {
 	)
 }
 
+// --------------View del estado del servicio ---------------------------
 func (m model) viewEstado() string {
 	s := estiloTituloASCII.Render("Estado del Servicio") + "\n\n"
 
@@ -364,6 +567,7 @@ func (m model) viewEstado() string {
 	return s
 }
 
+// --------------View de los logs ------------------------
 func (m model) viewLogs() string {
 	s := estiloTitulo.Render("Logs del Daemon") + "\n\n"
 
@@ -385,6 +589,7 @@ func (m model) viewLogs() string {
 	return s
 }
 
+// --------------View del historial de los commits ----------
 func (m model) viewHistorial() string {
 	s := estiloTitulo.Render("Historial de Respaldos") + "\n\n"
 
@@ -409,5 +614,75 @@ func (m model) viewHistorial() string {
 	}
 
 	s += estiloAyuda.Render("\nr refrescar · esc volver al menú")
+	return s
+}
+
+// ---------------------View y utils de las carpetas ----------------------
+func ordenarClaves(m map[string]string) []string {
+	claves := make([]string, 0, len(m))
+	for k := range m {
+		claves = append(claves, k)
+	}
+	sort.Strings(claves)
+	return claves
+}
+
+func (m model) viewCarpetas() string {
+	switch m.carpetasModo {
+	case modoAgregarCarpeta:
+		return m.viewCarpetasAgregar()
+	case modoConfirmarEliminar:
+		return m.viewCarpetasConfirmar()
+	default:
+		return m.viewCarpetasLista()
+	}
+}
+
+func (m model) viewCarpetasLista() string {
+	s := estiloTitulo.Render("Carpetas Vigiladas") + "\n\n"
+
+	if m.carpetasError != "" {
+		s += estiloError.Render("Error: "+m.carpetasError) + "\n\n"
+	}
+	if m.carpetasMensaje != "" {
+		s += estiloActivo.Render(m.carpetasMensaje) + "\n\n"
+	}
+
+	if len(m.carpetasOrden) == 0 {
+		s += "No hay carpetas vigiladas.\n"
+	} else {
+		for i, nombre := range m.carpetasOrden {
+			destino := m.carpetas[nombre]
+			linea := nombre + "  →  " + destino
+			if i == m.cursorCarpetas {
+				s += estiloSeleccionado.Render(linea) + "\n"
+			} else {
+				s += estiloNormal.Render(linea) + "\n"
+			}
+		}
+	}
+
+	s += estiloAyuda.Render("\na agregar · d eliminar seleccionada · esc volver al menú")
+	return s
+}
+
+func (m model) viewCarpetasAgregar() string {
+	s := estiloTitulo.Render("Agregar Carpeta Vigilada") + "\n\n"
+	s += "Nombre de la subcarpeta a vigilar (dentro de watch_dir):\n\n"
+	s += m.inputCarpeta.View() + "\n\n"
+
+	if m.carpetasError != "" {
+		s += estiloError.Render(m.carpetasError) + "\n\n"
+	}
+
+	s += estiloAyuda.Render("Enter confirmar · esc cancelar")
+	return s
+}
+
+func (m model) viewCarpetasConfirmar() string {
+	s := estiloTitulo.Render("Confirmar Eliminación") + "\n\n"
+	s += "¿Dejar de vigilar la carpeta '" + m.carpetaAConfirmar + "'?\n"
+	s += estiloAyuda.Render("(no se borran los archivos físicos, solo se deja de respaldar automáticamente)\n\n")
+	s += estiloAyuda.Render("y/s confirmar · n/esc cancelar")
 	return s
 }

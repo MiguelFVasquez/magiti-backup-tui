@@ -3,6 +3,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -57,4 +58,62 @@ func RepoDirDaemon() (string, error) {
 		return "", err
 	}
 	return cfg.RepoDir, nil
+}
+
+// GuardarConfigDaemon escribe la configuración completa de vuelta al
+// config.json del daemon, preservando el formato indentado.
+func GuardarConfigDaemon(cfg *ConfigDaemon) error {
+	ruta := RutaConfigDaemon()
+	datos, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(ruta, datos, 0o644)
+}
+
+// AgregarCarpeta agrega una nueva carpeta vigilada (mapeo 1:1: la carpeta
+// dentro de watch_dir y la carpeta destino dentro del repo tienen el mismo
+// nombre). También crea físicamente la carpeta dentro de watch_dir si no
+// existe, para que inotifywait tenga algo que vigilar.
+func AgregarCarpeta(nombre string) error {
+	cfg, err := LeerConfigDaemon()
+	if err != nil {
+		return err
+	}
+
+	if cfg.Carpetas == nil {
+		cfg.Carpetas = map[string]string{}
+	}
+	if _, existe := cfg.Carpetas[nombre]; existe {
+		return fmt.Errorf("la carpeta '%s' ya está siendo vigilada", nombre)
+	}
+	cfg.Carpetas[nombre] = nombre
+
+	rutaFisica := filepath.Join(cfg.WatchDir, nombre)
+	if err := os.MkdirAll(rutaFisica, 0o755); err != nil {
+		return fmt.Errorf("no se pudo crear el directorio %s: %w", rutaFisica, err)
+	}
+
+	rutaDestino := filepath.Join(cfg.RepoDir, nombre)
+	if err := os.MkdirAll(rutaDestino, 0o755); err != nil {
+		return fmt.Errorf("no se pudo crear el directorio destino %s: %w", rutaDestino, err)
+	}
+
+	return GuardarConfigDaemon(cfg)
+}
+
+// EliminarCarpeta quita una carpeta del mapeo vigilado. No borra los
+// archivos físicos (ni en watch_dir ni en el repo), solo deja de vigilarla.
+func EliminarCarpeta(nombre string) error {
+	cfg, err := LeerConfigDaemon()
+	if err != nil {
+		return err
+	}
+
+	if _, existe := cfg.Carpetas[nombre]; !existe {
+		return fmt.Errorf("la carpeta '%s' no está siendo vigilada", nombre)
+	}
+	delete(cfg.Carpetas, nombre)
+
+	return GuardarConfigDaemon(cfg)
 }
