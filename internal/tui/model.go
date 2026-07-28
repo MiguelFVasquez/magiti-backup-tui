@@ -75,6 +75,7 @@ func NuevoModelo() model {
 	ti.Placeholder = "nombre-de-la-carpeta"
 	ti.CharLimit = 50
 	ti.Width = 30
+	ti.Validate = validarCaracterCarpeta
 
 	return model{
 		vista:        vistaMenu,
@@ -467,8 +468,8 @@ func (m model) updateCarpetasAgregar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		nombre := strings.TrimSpace(m.inputCarpeta.Value())
-		if nombre == "" {
-			m.carpetasError = "El nombre de la carpeta no puede estar vacío."
+		if err := config.ValidarNombreCarpeta(nombre); err != nil {
+			m.carpetasError = err.Error()
 			return m, nil
 		}
 		m.inputCarpeta.Blur()
@@ -685,4 +686,21 @@ func (m model) viewCarpetasConfirmar() string {
 	s += estiloAyuda.Render("(no se borran los archivos físicos, solo se deja de respaldar automáticamente)\n\n")
 	s += estiloAyuda.Render("y/s confirmar · n/esc cancelar")
 	return s
+}
+
+// validarCaracterCarpeta se ejecuta en cada tecla dentro del input.
+// Es más permisiva que config.ValidarNombreCarpeta porque debe aceptar
+// estados intermedios de escritura; solo bloquea caracteres que NUNCA
+// serán válidos (espacios, mayúsculas, barras, símbolos raros).
+func validarCaracterCarpeta(valor string) error {
+	if len(valor) > 50 {
+		return fmt.Errorf("máximo 50 caracteres")
+	}
+	for _, r := range valor {
+		esValido := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+		if !esValido {
+			return fmt.Errorf("carácter no permitido: %q", r)
+		}
+	}
+	return nil
 }

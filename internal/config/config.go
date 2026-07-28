@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 // ConfigDaemon refleja la estructura de scripts/config.json del proyecto
@@ -76,6 +78,10 @@ func GuardarConfigDaemon(cfg *ConfigDaemon) error {
 // nombre). También crea físicamente la carpeta dentro de watch_dir si no
 // existe, para que inotifywait tenga algo que vigilar.
 func AgregarCarpeta(nombre string) error {
+	if err := ValidarNombreCarpeta(nombre); err != nil {
+		return err
+	}
+
 	cfg, err := LeerConfigDaemon()
 	if err != nil {
 		return err
@@ -116,4 +122,26 @@ func EliminarCarpeta(nombre string) error {
 	delete(cfg.Carpetas, nombre)
 
 	return GuardarConfigDaemon(cfg)
+}
+
+var patronNombreCarpetaValido = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,49}$`)
+
+// ValidarNombreCarpeta verifica que el nombre propuesto sea seguro para
+// usarse como nombre de directorio: solo minúsculas, dígitos, guion y
+// guion bajo, sin espacios, sin barras (evita crear subcarpetas o rutas
+// fuera de watch_dir) y sin secuencias de "..".
+func ValidarNombreCarpeta(nombre string) error {
+	if nombre == "" {
+		return fmt.Errorf("el nombre no puede estar vacío")
+	}
+	if strings.Contains(nombre, "..") {
+		return fmt.Errorf("el nombre no puede contener '..'")
+	}
+	if strings.ContainsAny(nombre, "/\\") {
+		return fmt.Errorf("el nombre no puede contener '/' ni '\\'")
+	}
+	if !patronNombreCarpetaValido.MatchString(nombre) {
+		return fmt.Errorf("solo se permiten minúsculas, números, '-' y '_' (máx. 50 caracteres, debe empezar con letra o número)")
+	}
+	return nil
 }
