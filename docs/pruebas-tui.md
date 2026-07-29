@@ -115,6 +115,22 @@ Validar que la interfaz de terminal permita al administrador de infraestructura 
     [WARN] Carpeta no mapeada, se ignora: dns
     ```
 
+### Prueba 9 — Gestión de carpetas vigiladas: validación del nombre al agregar
+
+- **Qué se probó:** que el campo de texto para agregar una carpeta rechace nombres inválidos (espacios, mayúsculas, barras, secuencias `..`) tanto mientras se escribe como al confirmar con Enter, evitando así nombres que pudieran romper el mapeo 1:1 o crear rutas fuera del directorio vigilado.
+- **Procedimiento:**
+  1. Se intentó escribir un espacio en blanco dentro del campo — carácter bloqueado, no apareció en el input.
+  2. Se intentó escribir una letra mayúscula (`D`) — carácter bloqueado.
+  3. Se intentó escribir una secuencia con barras (`../../etc`) — los caracteres `/` y `.` fueron bloqueados individualmente por el validador de `textinput`.
+  4. Se dejó el campo vacío y se presionó Enter — se mostró el mensaje "el nombre no puede estar vacío" sin intentar guardar.
+  5. Se escribió un nombre válido (`dns2`) y se confirmó con Enter.
+- **Resultado esperado:** los casos 1–4 debían impedir el guardado; el caso 5 debía completarse con éxito.
+- **Resultado obtenido:** ✅ Exitoso en los cinco casos. El nombre válido `dns2` se guardó correctamente en `config.json` y el servicio se reinició reflejando la nueva carpeta:
+  ```
+  Daemon iniciado. Vigilando: /home/miguel/simulacion-configs (carpetas: vpn dns2 firewall)
+  ```
+- **Observación adicional (no es un bug):** tras agregar `dns2`, no apareció ningún commit nuevo en el historial de GitHub hasta que se creó un archivo real dentro de la carpeta. Esto es el comportamiento esperado: la TUI únicamente actualiza `config.json`, crea el directorio físico y reinicia el servicio — no ejecuta operaciones de Git por sí misma. El respaldo (commit/push) sigue siendo responsabilidad exclusiva del daemon, que solo actúa ante eventos reales de archivo (`close_write`, `delete`, `moved_to`, etc.); una carpeta vacía no genera ningún evento de `inotifywait`, por lo que no hay nada que respaldar hasta que se agregue contenido. Se confirmó el flujo completo creando un archivo de prueba dentro de `dns2/`, el cual sí generó el commit y push correspondientes.
+
 ## Bugs Detectados y Corregidos Durante las Pruebas
 
 | # | Bug | Causa | Corrección |
@@ -135,9 +151,9 @@ Validar que la interfaz de terminal permita al administrador de infraestructura 
 | Listar carpetas vigiladas | ✅ |
 | Agregar carpeta vigilada (con reinicio automático) | ✅ |
 | Eliminar carpeta vigilada (con reinicio automático) | ✅ |
-| Validación de formato del nombre de carpeta (caracteres especiales, espacios) | ⏸️ Pendiente |
+| Validación de formato del nombre de carpeta (caracteres especiales, espacios) | ✅ |
 | Scroll en listas largas (logs/historial con muchas entradas) | ⏸️ Pendiente |
 
 ## Conclusión
 
-La TUI (`magiti-backup-tui`) cubre, en su versión actual, las cuatro necesidades priorizadas por el equipo del proyecto para la gestión operativa del daemon de respaldo: visibilidad del estado del servicio, revisión de actividad, trazabilidad de respaldos realizados, y administración de las carpetas vigiladas sin edición manual de archivos de configuración. Las pruebas realizadas permitieron detectar y corregir tres fallas — dos de configuración/permisos y una de lógica de enrutamiento de eventos — antes de considerar esta fase del proyecto como estable.
+La TUI (`magiti-backup-tui`) cubre, en su versión actual, las cuatro necesidades priorizadas por el equipo del proyecto para la gestión operativa del daemon de respaldo: visibilidad del estado del servicio, revisión de actividad, trazabilidad de respaldos realizados, y administración de las carpetas vigiladas sin edición manual de archivos de configuración. Las pruebas realizadas permitieron detectar y corregir tres fallas — dos de configuración/permisos y una de lógica de enrutamiento de eventos — antes de considerar esta fase del proyecto como estable. Adicionalmente, se incorporó y validó una capa de saneamiento de entrada (nombres de carpetas) para prevenir configuraciones inválidas o rutas fuera del directorio vigilado.
