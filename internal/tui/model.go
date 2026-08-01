@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -25,6 +26,7 @@ const (
 	vistaLogs
 	vistaHistorial
 	vistaCarpetas
+	vistaAyuda
 )
 
 const (
@@ -68,6 +70,12 @@ type model struct {
 	carpetasError     string
 	carpetasMensaje   string
 	carpetaAConfirmar string
+	// Improve en UX
+	logsViewport      viewport.Model
+	historialViewport viewport.Model
+	viewportListo     bool
+
+	inputCarpetaAviso string
 }
 
 func NuevoModelo() model {
@@ -78,8 +86,10 @@ func NuevoModelo() model {
 	ti.Validate = validarCaracterCarpeta
 
 	return model{
-		vista:        vistaMenu,
-		inputCarpeta: ti,
+		vista:             vistaMenu,
+		inputCarpeta:      ti,
+		logsViewport:      viewport.New(0, 0),
+		historialViewport: viewport.New(0, 0),
 	}
 }
 
@@ -118,6 +128,8 @@ type carpetaAccionCompletadaMsg struct {
 	mensaje string
 	err     error
 }
+
+type limpiarAvisoCarpetaMsg struct{}
 
 const (
 	maxLineasLog          = 30
@@ -213,6 +225,12 @@ func eliminarCarpetaCmd(nombre string) tea.Cmd {
 	}
 }
 
+func limpiarAvisoCarpetaCmd() tea.Cmd {
+	return tea.Tick(1500*time.Millisecond, func(t time.Time) tea.Msg {
+		return limpiarAvisoCarpetaMsg{}
+	})
+}
+
 // ---------- Update ----------
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -230,7 +248,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateHistorial(msg)
 		case vistaCarpetas:
 			return m.updateCarpetas(msg)
+		case vistaAyuda:
+			return m.updateAyuda(msg)
 		}
+	case limpiarAvisoCarpetaMsg:
+		m.inputCarpetaAviso = ""
+		return m, nil
 
 	case estadoActualizadoMsg:
 		m.estadoServicio = daemon.Estado(msg)
@@ -257,6 +280,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.ancho = msg.Width
 		m.alto = msg.Height
+
+		// Reservamos ~6 líneas para título + ayuda en cada pantalla.
+		altoContenido := msg.Height - 6
+		if altoContenido < 3 {
+			altoContenido = 3
+		}
+		m.logsViewport.Width = msg.Width
+		m.logsViewport.Height = altoContenido
+		m.historialViewport.Width = msg.Width
+		m.historialViewport.Height = altoContenido
+		m.viewportListo = true
 		return m, nil
 
 	case logsCargadosMsg:
@@ -265,6 +299,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.logsLineas = msg.lineas
 			m.logsError = ""
+			contenido := ""
+			for _, l := range m.logsLineas {
+				contenido += estiloLineaLog(l) + "\n"
+			}
+			m.logsViewport.SetContent(contenido)
+			m.logsViewport.GotoBottom()
 		}
 		return m, nil
 
@@ -282,6 +322,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.historialCommits = msg.commits
 			m.historialError = ""
+			contenido := ""
+			for _, c := range m.historialCommits {
+				contenido += estiloFechaCommit.Render(c.Fecha) + "  " + estiloMensajeCommit.Render(c.Mensaje) + "\n"
+			}
+			m.historialViewport.SetContent(contenido)
 		}
 		return m, nil
 
@@ -316,6 +361,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		m.vista = vistaAyuda
+		return m, nil
+
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "up", "k":
@@ -380,7 +429,9 @@ func (m model) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.vista = vistaMenu
 		return m, nil
 	}
-	return m, nil
+	var cmd tea.Cmd
+	m.logsViewport, cmd = m.logsViewport.Update(msg)
+	return m, cmd
 }
 
 func (m model) updateHistorial(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -394,7 +445,9 @@ func (m model) updateHistorial(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.historialCargando = true
 		return m, leerHistorialCmd()
 	}
-	return m, nil
+	var cmd tea.Cmd
+	m.historialViewport, cmd = m.historialViewport.Update(msg)
+	return m, cmd
 }
 
 // esperarYLimpiarMsg limpia el mensaje de acción tras unos segundos, para
@@ -465,6 +518,7 @@ func (m model) updateCarpetasAgregar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.carpetasModo = modoListaCarpetas
 		m.inputCarpeta.Blur()
+		m.inputCarpetaAviso = ""
 		return m, nil
 	case "enter":
 		nombre := strings.TrimSpace(m.inputCarpeta.Value())
@@ -476,6 +530,19 @@ func (m model) updateCarpetasAgregar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.carpetasModo = modoListaCarpetas
 		return m, agregarCarpetaCmd(nombre)
 	}
+
+	// Detecta si esta tecla sería rechazada por el validador del input,
+	// para mostrar un aviso claro en vez de que simplemente "no pase nada".
+	if msg.Type == tea.KeyRunes {
+		candidato := m.inputCarpeta.Value() + string(msg.Runes)
+		if err := validarCaracterCarpeta(candidato); err != nil {
+			m.inputCarpetaAviso = "carácter no permitido"
+			var cmd tea.Cmd
+			m.inputCarpeta, cmd = m.inputCarpeta.Update(msg)
+			return m, tea.Batch(cmd, limpiarAvisoCarpetaCmd())
+		}
+	}
+	m.inputCarpetaAviso = ""
 
 	var cmd tea.Cmd
 	m.inputCarpeta, cmd = m.inputCarpeta.Update(msg)
@@ -498,6 +565,18 @@ func (m model) updateCarpetasConfirmar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// -----------------Update Help---------------------------
+func (m model) updateAyuda(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q", "?":
+		m.vista = vistaMenu
+		return m, nil
+	}
+	return m, nil
+}
+
 // ---------- View ----------
 
 func (m model) View() string {
@@ -510,6 +589,8 @@ func (m model) View() string {
 		return m.viewHistorial()
 	case vistaCarpetas:
 		return m.viewCarpetas()
+	case vistaAyuda:
+		return m.viewAyuda()
 	default:
 		return m.viewMenu()
 	}
@@ -533,8 +614,7 @@ func (m model) viewMenu() string {
 		estado = "servicio activo"
 	}
 	contenido += "\n" + estiloInfo.Render("Estado: "+estado) + "\n"
-	contenido += estiloAyuda.Render("↑/↓ navegar · Enter seleccionar · q salir")
-
+	contenido += estiloAyuda.Render("↑/↓ navegar · Enter seleccionar · ? ayuda · q salir")
 	return lipgloss.Place(
 		m.ancho, m.alto,
 		lipgloss.Center, lipgloss.Center,
@@ -581,12 +661,10 @@ func (m model) viewLogs() string {
 	if len(m.logsLineas) == 0 {
 		s += "Sin registros aún.\n"
 	} else {
-		for _, linea := range m.logsLineas {
-			s += estiloLineaLog(linea) + "\n"
-		}
+		s += m.logsViewport.View() + "\n"
 	}
 
-	s += estiloAyuda.Render("\nActualizando cada 3s · esc volver al menú")
+	s += estiloAyuda.Render("↑/↓ o j/k desplazar · Actualizando cada 3s · esc volver al menú")
 	return s
 }
 
@@ -608,13 +686,10 @@ func (m model) viewHistorial() string {
 	if len(m.historialCommits) == 0 {
 		s += "Aún no hay respaldos registrados.\n"
 	} else {
-		for _, c := range m.historialCommits {
-			linea := estiloFechaCommit.Render(c.Fecha) + "  " + estiloMensajeCommit.Render(c.Mensaje)
-			s += linea + "\n"
-		}
+		s += m.historialViewport.View() + "\n"
 	}
 
-	s += estiloAyuda.Render("\nr refrescar · esc volver al menú")
+	s += estiloAyuda.Render("↑/↓ o j/k desplazar · r refrescar · esc volver al menú")
 	return s
 }
 
@@ -670,13 +745,18 @@ func (m model) viewCarpetasLista() string {
 func (m model) viewCarpetasAgregar() string {
 	s := estiloTitulo.Render("Agregar Carpeta Vigilada") + "\n\n"
 	s += "Nombre de la subcarpeta a vigilar (dentro de watch_dir):\n\n"
-	s += m.inputCarpeta.View() + "\n\n"
+	s += m.inputCarpeta.View() + "\n"
+
+	if m.inputCarpetaAviso != "" {
+		s += estiloError.Render(m.inputCarpetaAviso) + "\n"
+	}
+	s += "\n"
 
 	if m.carpetasError != "" {
 		s += estiloError.Render(m.carpetasError) + "\n\n"
 	}
 
-	s += estiloAyuda.Render("Enter confirmar · esc cancelar")
+	s += estiloAyuda.Render("Solo minúsculas, números, '-' y '_' · Enter confirmar · esc cancelar")
 	return s
 }
 
@@ -703,4 +783,62 @@ func validarCaracterCarpeta(valor string) error {
 		}
 	}
 	return nil
+}
+
+// ----------View de ayuda---------------
+func (m model) viewAyuda() string {
+	s := estiloTitulo.Render("Ayuda - Atajos de Teclado") + "\n\n"
+
+	secciones := []struct {
+		titulo string
+		atajos [][2]string
+	}{
+		{
+			"Menú principal",
+			[][2]string{
+				{"↑/↓ o k/j", "navegar"},
+				{"Enter", "seleccionar"},
+				{"?", "ver esta ayuda"},
+				{"q", "salir"},
+			},
+		},
+		{
+			"Estado del servicio",
+			[][2]string{
+				{"i", "iniciar servicio"},
+				{"d", "detener servicio"},
+				{"r", "reiniciar servicio"},
+				{"esc", "volver al menú"},
+			},
+		},
+		{
+			"Logs / Historial",
+			[][2]string{
+				{"↑/↓ o j/k", "desplazar"},
+				{"PgUp/PgDn", "desplazar por página"},
+				{"r", "refrescar (solo historial)"},
+				{"esc", "volver al menú"},
+			},
+		},
+		{
+			"Gestionar carpetas",
+			[][2]string{
+				{"a", "agregar carpeta"},
+				{"d", "eliminar carpeta seleccionada"},
+				{"y/n", "confirmar o cancelar eliminación"},
+				{"esc", "volver / cancelar"},
+			},
+		},
+	}
+
+	for _, sec := range secciones {
+		s += estiloEtiquetaMenu.Render(sec.titulo) + "\n"
+		for _, atajo := range sec.atajos {
+			s += "  " + estiloFechaCommit.Render(atajo[0]) + "  " + atajo[1] + "\n"
+		}
+		s += "\n"
+	}
+
+	s += estiloAyuda.Render("esc o ? volver al menú")
+	return s
 }
